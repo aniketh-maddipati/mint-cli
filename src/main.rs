@@ -2,6 +2,8 @@ mod agents;
 mod app;
 mod config;
 mod logging;
+mod pane;
+mod project;
 mod session;
 mod ui;
 
@@ -62,7 +64,6 @@ async fn run(terminal: &mut Term, mut app: App, mut rx: UnboundedReceiver<AppEve
 
         app.handle_event(event);
         if app.should_quit {
-            app.save_all();
             break;
         }
         terminal.draw(|f| ui::draw(f, &mut app))?;

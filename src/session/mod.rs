@@ -2,11 +2,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::config::Params;
+use crate::project::ProjectId;
+use crate::project::ProjectRegistry;
 
 pub type BranchId = String;
 
@@ -41,53 +41,6 @@ impl ChatMessage {
             role: Role::Assistant,
             content: content.into(),
         }
-    }
-
-    pub fn system(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::System,
-            content: content.into(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PtyAgentKind {
-    Claude,
-    Codex,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HttpProvider {
-    Tinker,
-    LmStudio,
-}
-
-impl HttpProvider {
-    pub fn title(self) -> &'static str {
-        match self {
-            HttpProvider::Tinker => "Tinker",
-            HttpProvider::LmStudio => "LM Studio",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum SessionKind {
-    Pty { agent: PtyAgentKind },
-    Http { provider: HttpProvider },
-}
-
-impl SessionKind {
-    pub fn is_pty(&self) -> bool {
-        matches!(self, SessionKind::Pty { .. })
-    }
-
-    pub fn is_http(&self) -> bool {
-        matches!(self, SessionKind::Http { .. })
     }
 }
 
@@ -148,36 +101,25 @@ impl RunNode {
     }
 }
 
+/// A project-scoped stage in the debug timeline (replaces chat sessions).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Session {
+pub struct Stage {
     pub id: String,
     pub name: String,
-    pub kind: SessionKind,
     pub created_at: String,
     pub updated_at: String,
-    pub paused: bool,
-    pub messages: Vec<ChatMessage>,
-    pub draft_prompt: String,
-    pub params: Params,
-    pub model: String,
     pub active_branch: BranchId,
     pub playhead_run: Option<String>,
 }
 
-impl Session {
-    pub fn new(name: impl Into<String>, kind: SessionKind, model: String, params: Params) -> Self {
+impl Stage {
+    pub fn new(name: impl Into<String>) -> Self {
         let now = now_rfc3339();
         Self {
             id: Uuid::new_v4().to_string(),
             name: name.into(),
-            kind,
             created_at: now.clone(),
             updated_at: now,
-            paused: false,
-            messages: Vec::new(),
-            draft_prompt: String::new(),
-            params,
-            model,
             active_branch: main_branch(),
             playhead_run: None,
         }
@@ -186,78 +128,77 @@ impl Session {
     pub fn touch(&mut self) {
         self.updated_at = now_rfc3339();
     }
-
-    pub fn is_http(&self) -> bool {
-        self.kind.is_http()
-    }
-
-    pub fn is_pty(&self) -> bool {
-        self.kind.is_pty()
-    }
 }
 
-pub struct SessionStore;
+pub struct ProjectStore;
 
-impl SessionStore {
-    pub fn root() -> Result<PathBuf> {
-        let dirs = ProjectDirs::from("dev", "mint", "mint-cli")
-            .context("could not resolve data directory")?;
-        Ok(dirs.data_dir().join("sessions"))
+impl ProjectStore {
+    pub fn root(project_id: &ProjectId) -> Result<PathBuf> {
+        ProjectRegistry::data_dir(project_id)
     }
 
-    pub fn session_dir(id: &str) -> Result<PathBuf> {
-        Ok(Self::root()?.join(id))
+    pub fn stages_dir(project_id: &ProjectId) -> Result<PathBuf> {
+        Ok(Self::root(project_id)?.join("stages"))
     }
 
-    pub fn runs_dir(session_id: &str) -> Result<PathBuf> {
-        Ok(Self::session_dir(session_id)?.join("runs"))
+    pub fn stage_dir(project_id: &ProjectId, stage_id: &str) -> Result<PathBuf> {
+        Ok(Self::stages_dir(project_id)?.join(stage_id))
     }
 
-    pub fn load_all() -> Result<Vec<Session>> {
-        let root = Self::root()?;
+    pub fn runs_dir(project_id: &ProjectId, stage_id: &str) -> Result<PathBuf> {
+        Ok(Self::stage_dir(project_id, stage_id)?.join("runs"))
+    }
+
+    pub fn load_stages(project_id: &ProjectId) -> Result<Vec<Stage>> {
+        let root = Self::stages_dir(project_id)?;
         if !root.exists() {
             return Ok(Vec::new());
         }
-        let mut sessions = Vec::new();
-        for entry in std::fs::read_dir(&root).context("read sessions dir")? {
+        let mut stages = Vec::new();
+        for entry in std::fs::read_dir(&root).context("read stages dir")? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
                 continue;
             }
-            let path = entry.path().join("session.json");
+            let path = entry.path().join("stage.json");
             if path.exists() {
-                if let Ok(session) = Self::load_session_file(&path) {
-                    sessions.push(session);
+                if let Ok(stage) = Self::load_stage_file(&path) {
+                    stages.push(stage);
                 }
             }
         }
-        sessions.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
-        Ok(sessions)
+        stages.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+        Ok(stages)
     }
 
-    pub fn load_session(id: &str) -> Result<Session> {
-        let path = Self::session_dir(id)?.join("session.json");
-        Self::load_session_file(&path)
+    pub fn load_or_init(project_id: &ProjectId) -> Result<Vec<Stage>> {
+        let mut stages = Self::load_stages(project_id)?;
+        if stages.is_empty() {
+            let stage = Stage::new("default");
+            Self::save_stage(project_id, &stage)?;
+            stages.push(stage);
+        }
+        Ok(stages)
     }
 
-    fn load_session_file(path: &Path) -> Result<Session> {
-        let text = std::fs::read_to_string(path).context("read session.json")?;
-        let session: Session = serde_json::from_str(&text).context("parse session.json")?;
-        Ok(session)
+    fn load_stage_file(path: &Path) -> Result<Stage> {
+        let text = std::fs::read_to_string(path).context("read stage.json")?;
+        let stage: Stage = serde_json::from_str(&text).context("parse stage.json")?;
+        Ok(stage)
     }
 
-    pub fn save_session(session: &Session) -> Result<()> {
-        let dir = Self::session_dir(&session.id)?;
-        std::fs::create_dir_all(&dir).context("create session dir")?;
+    pub fn save_stage(project_id: &ProjectId, stage: &Stage) -> Result<()> {
+        let dir = Self::stage_dir(project_id, &stage.id)?;
+        std::fs::create_dir_all(&dir).context("create stage dir")?;
         std::fs::create_dir_all(dir.join("runs")).ok();
-        let path = dir.join("session.json");
-        let text = serde_json::to_string_pretty(session).context("serialize session")?;
-        std::fs::write(path, text).context("write session.json")?;
+        let path = dir.join("stage.json");
+        let text = serde_json::to_string_pretty(stage).context("serialize stage")?;
+        std::fs::write(path, text).context("write stage.json")?;
         Ok(())
     }
 
-    pub fn save_run(session_id: &str, run: &RunNode) -> Result<()> {
-        let dir = Self::runs_dir(session_id)?;
+    pub fn save_run(project_id: &ProjectId, stage_id: &str, run: &RunNode) -> Result<()> {
+        let dir = Self::runs_dir(project_id, stage_id)?;
         std::fs::create_dir_all(&dir).context("create runs dir")?;
         let path = dir.join(format!("{}.json", run.id));
         let text = serde_json::to_string_pretty(run).context("serialize run")?;
@@ -278,23 +219,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn session_json_roundtrip() {
-        let session = Session::new(
-            "test",
-            SessionKind::Http {
-                provider: HttpProvider::Tinker,
-            },
-            "tinker://checkpoint".to_string(),
-            Params {
-                temperature: 0.7,
-                max_tokens: 100.0,
-                top_p: 1.0,
-            },
-        );
-        let json = serde_json::to_string(&session).unwrap();
-        let parsed: Session = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.name, "test");
-        assert_eq!(parsed.model, "tinker://checkpoint");
+    fn stage_json_roundtrip() {
+        let stage = Stage::new("eval");
+        let json = serde_json::to_string(&stage).unwrap();
+        let parsed: Stage = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "eval");
     }
 
     #[test]

@@ -4,80 +4,57 @@ use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
-/// A launchable agent CLI (spawned in a PTY).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A launchable CLI (spawned in a PTY).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCmd {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
 }
 
-/// OpenAI-compatible HTTP endpoint (LM Studio, Tinker, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpConfig {
-    pub base_url: String,
-    pub model: String,
-    #[serde(default)]
-    pub api_key_env: Option<String>,
-    #[serde(default)]
-    pub system_prompt: String,
+/// Optional command pane declared in config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandPane {
+    pub label: String,
+    #[serde(flatten)]
+    pub cmd: AgentCmd,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpConfigs {
-    pub tinker: HttpConfig,
-    pub lmstudio: HttpConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Params {
-    pub temperature: f64,
-    pub max_tokens: f64,
-    pub top_p: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub claude: AgentCmd,
     pub codex: AgentCmd,
-    #[serde(default, alias = "lmstudio")]
-    pub http: HttpConfigs,
-    pub params: Params,
+    #[serde(default)]
+    pub commands: Vec<CommandPane>,
 }
 
-/// Legacy config shape for migration.
+/// Legacy config shapes for migration.
 #[derive(Debug, Deserialize)]
 struct LegacyConfig {
     claude: AgentCmd,
     codex: AgentCmd,
-    lmstudio: LegacyLmConfig,
-    params: Params,
+    #[serde(default)]
+    http: Option<LegacyHttpSection>,
+    params: Option<LegacyParams>,
 }
 
 #[derive(Debug, Deserialize)]
-struct LegacyLmConfig {
+struct LegacyHttpSection {
+    tinker: Option<LegacyHttpConfig>,
+    lmstudio: Option<LegacyHttpConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacyHttpConfig {
     base_url: String,
     model: String,
 }
 
-impl Default for HttpConfigs {
-    fn default() -> Self {
-        Self {
-            tinker: HttpConfig {
-                base_url: "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
-                    .to_string(),
-                model: "tinker://YOUR_CHECKPOINT".to_string(),
-                api_key_env: Some("TINKER_API_KEY".to_string()),
-                system_prompt: String::new(),
-            },
-            lmstudio: HttpConfig {
-                base_url: "http://localhost:1234/v1".to_string(),
-                model: "local-model".to_string(),
-                api_key_env: None,
-                system_prompt: String::new(),
-            },
-        }
-    }
+#[derive(Debug, Deserialize)]
+struct LegacyParams {
+    temperature: f64,
+    max_tokens: f64,
+    top_p: f64,
 }
 
 impl Default for Config {
@@ -91,26 +68,7 @@ impl Default for Config {
                 command: "codex".to_string(),
                 args: vec![],
             },
-            http: HttpConfigs {
-                tinker: HttpConfig {
-                    base_url: "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
-                        .to_string(),
-                    model: "tinker://YOUR_CHECKPOINT".to_string(),
-                    api_key_env: Some("TINKER_API_KEY".to_string()),
-                    system_prompt: String::new(),
-                },
-                lmstudio: HttpConfig {
-                    base_url: "http://localhost:1234/v1".to_string(),
-                    model: "local-model".to_string(),
-                    api_key_env: None,
-                    system_prompt: String::new(),
-                },
-            },
-            params: Params {
-                temperature: 0.7,
-                max_tokens: 2048.0,
-                top_p: 1.0,
-            },
+            commands: vec![],
         }
     }
 }
@@ -132,14 +90,13 @@ impl Config {
         if let Ok(cfg) = toml::from_str::<Config>(&text) {
             return Ok(cfg);
         }
-        // Migrate legacy [lmstudio]-only config.
+        // Migrate legacy chat-era config (drops http/params).
         if let Ok(legacy) = toml::from_str::<LegacyConfig>(&text) {
-            let mut cfg = Config::default();
-            cfg.claude = legacy.claude;
-            cfg.codex = legacy.codex;
-            cfg.params = legacy.params;
-            cfg.http.lmstudio.base_url = legacy.lmstudio.base_url;
-            cfg.http.lmstudio.model = legacy.lmstudio.model;
+            let cfg = Config {
+                claude: legacy.claude,
+                codex: legacy.codex,
+                commands: vec![],
+            };
             let _ = cfg.save();
             return Ok(cfg);
         }
@@ -161,13 +118,6 @@ impl Config {
             .context("could not resolve config directory")?;
         Ok(dirs.config_dir().join("config.toml"))
     }
-
-    pub fn http_for(&self, provider: crate::session::HttpProvider) -> HttpConfig {
-        match provider {
-            crate::session::HttpProvider::Tinker => self.http.tinker.clone(),
-            crate::session::HttpProvider::LmStudio => self.http.lmstudio.clone(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -179,8 +129,7 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.claude.command, "claude");
         assert_eq!(cfg.codex.command, "codex");
-        assert_eq!(cfg.http.lmstudio.base_url, "http://localhost:1234/v1");
-        assert!(cfg.http.tinker.api_key_env.as_deref() == Some("TINKER_API_KEY"));
+        assert!(cfg.commands.is_empty());
     }
 
     #[test]
@@ -188,7 +137,6 @@ mod tests {
         let cfg = Config::default();
         let text = toml::to_string_pretty(&cfg).unwrap();
         let parsed: Config = toml::from_str(&text).unwrap();
-        assert_eq!(parsed.params.temperature, cfg.params.temperature);
-        assert_eq!(parsed.http.tinker.model, cfg.http.tinker.model);
+        assert_eq!(parsed.claude.command, cfg.claude.command);
     }
 }

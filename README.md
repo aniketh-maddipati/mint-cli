@@ -1,12 +1,12 @@
 # mint-cli
 
-Full-screen terminal UI for controlling AI agent runs from one place: **Claude** and **Codex** in PTYs, **Tinker** and **LM Studio** over OpenAI-compatible HTTP.
+Debuggable terminal workspace: real PTY sessions (Claude, Codex, shell commands), project-scoped timeline, honest fork/rerun — not HTTP chat, not tmux.
 
 ## Requirements
 
 - Rust 1.85+ (edition 2024)
-- `claude` and/or `codex` on `PATH` for PTY sessions
-- LM Studio or Tinker API access for HTTP sessions
+- `claude` and/or `codex` on `PATH` for agent panes
+- Git repo with `origin` remote for project identity (falls back to path hash)
 
 ## Quick start
 
@@ -14,28 +14,26 @@ Full-screen terminal UI for controlling AI agent runs from one place: **Claude**
 cargo run
 ```
 
-Config is written on first run to the platform config dir (`~/.config/mint-cli/config.toml` on macOS/Linux).
+Config is written on first run to `~/.config/mint-cli/config.toml`. Project data lives under `~/.local/share/mint-cli/projects/{git-remote-id}/`.
 
-## Sessions
+## Workspace
 
-Each session is a persistent workspace stored under `~/.local/share/mint-cli/sessions/`:
-
-- **PTY sessions** — spawn `claude` or `codex` in a pseudo-terminal pane
-- **HTTP sessions** — multi-turn chat against Tinker or LM Studio with streamed responses and run records
+- **Default**: one full-screen Claude PTY, lazy auto-started on first render
+- **Split**: `Ctrl+\` toggles Claude | Codex side-by-side
+- **Command panes**: declare extra PTY panes in config (see below)
+- **Timeline**: `F3` toggles project stage list at the bottom
 
 ### Keys
 
 | Key | Action |
 |-----|--------|
 | `Ctrl+Q` / `F10` | Quit |
-| `F1` | Focus session list |
-| `F2` | Focus output / prompt |
-| `F3` | Focus controls |
-| `F4` | Focus parameter scrubbers |
-| `[` / `]` | Previous / next session |
-| `n` | New session (cycles Tinker → LM Studio → Codex → Claude) |
+| `F3` | Toggle timeline |
+| `Ctrl+\` | Toggle single / Claude\|Codex split |
+| `[` / `]` | Previous / next pane |
+| `Ctrl+R` | Restart active pane |
 
-Mouse clicks work on sessions, buttons, and scrubbers.
+Keystrokes go directly to the focused PTY pane.
 
 ## Config
 
@@ -46,22 +44,13 @@ command = "claude"
 [codex]
 command = "codex"
 
-[http.tinker]
-base_url = "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1"
-model = "tinker://YOUR_CHECKPOINT"
-api_key_env = "TINKER_API_KEY"
-
-[http.lmstudio]
-base_url = "http://localhost:1234/v1"
-model = "local-model"
-
-[params]
-temperature = 0.7
-max_tokens = 2048.0
-top_p = 1.0
+[[commands]]
+label = "shell"
+command = "bash"
+args = []
 ```
 
-Legacy `[lmstudio]` sections are migrated automatically.
+Legacy chat-era config (`[http]`, `[params]`) is migrated automatically — HTTP and scrubber UI are removed.
 
 ## Development
 
