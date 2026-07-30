@@ -55,3 +55,35 @@ impl Scrubber {
         format!("{:.*}", self.precision, self.value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Scrubber;
+
+    #[test]
+    fn ratio_at_midpoint() {
+        let s = Scrubber::new("Temperature", 1.0, 0.0, 2.0, 0.05, 2);
+        assert!((s.ratio() - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn inc_respects_max() {
+        let mut s = Scrubber::new("Temperature", 1.95, 0.0, 2.0, 0.05, 2);
+        s.inc(1.0);
+        assert_eq!(s.value, 2.0);
+    }
+
+    #[test]
+    fn dec_respects_min() {
+        let mut s = Scrubber::new("Temperature", 0.05, 0.0, 2.0, 0.05, 2);
+        s.dec(1.0);
+        assert_eq!(s.value, 0.0);
+    }
+
+    #[test]
+    fn set_ratio_sets_value() {
+        let mut s = Scrubber::new("Top P", 0.0, 0.0, 1.0, 0.05, 2);
+        s.set_ratio(0.75);
+        assert_eq!(s.value, 0.75);
+    }
+}

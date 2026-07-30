@@ -94,3 +94,25 @@ impl Config {
         Ok(dirs.config_dir().join("config.toml"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+
+    #[test]
+    fn default_config_has_expected_commands() {
+        let cfg = Config::default();
+        assert_eq!(cfg.claude.command, "claude");
+        assert_eq!(cfg.codex.command, "codex");
+        assert_eq!(cfg.lmstudio.base_url, "http://localhost:1234/v1");
+    }
+
+    #[test]
+    fn config_roundtrips_through_toml() {
+        let cfg = Config::default();
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(parsed.params.temperature, cfg.params.temperature);
+        assert_eq!(parsed.lmstudio.model, cfg.lmstudio.model);
+    }
+}
