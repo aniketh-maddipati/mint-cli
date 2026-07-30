@@ -1,2 +1,2 @@
-pub mod lmstudio;
+pub mod openai_compat;
 pub mod pty;

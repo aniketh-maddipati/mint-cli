@@ -2,6 +2,7 @@ mod agents;
 mod app;
 mod config;
 mod logging;
+mod session;
 mod ui;
 
 use std::io::{self, Stdout};
@@ -49,7 +50,6 @@ async fn run(terminal: &mut Term, mut app: App, mut rx: UnboundedReceiver<AppEve
     terminal.draw(|f| ui::draw(f, &mut app))?;
 
     while let Some(event) = rx.recv().await {
-        // Ignore key-release/repeat noise on platforms that emit it.
         if let AppEvent::Input(Event::Key(k)) = &event {
             if k.kind == KeyEventKind::Release {
                 continue;
@@ -62,6 +62,7 @@ async fn run(terminal: &mut Term, mut app: App, mut rx: UnboundedReceiver<AppEve
 
         app.handle_event(event);
         if app.should_quit {
+            app.save_all();
             break;
         }
         terminal.draw(|f| ui::draw(f, &mut app))?;
@@ -74,7 +75,6 @@ fn spawn_input_reader(tx: UnboundedSender<AppEvent>) {
     tokio::spawn(async move {
         let mut reader = EventStream::new();
         while let Some(Ok(event)) = reader.next().await {
-            // Escape hatch even if the app loop wedges.
             if let Event::Key(k) = &event {
                 if k.code == KeyCode::Char('q') && k.modifiers.contains(KeyModifiers::CONTROL) {
                     let _ = tx.send(AppEvent::Input(event));

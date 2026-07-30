@@ -4,8 +4,11 @@ use anyhow::{Context, Result};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::app::{AgentKind, AppEvent};
+use crate::app::AppEvent;
 use crate::config::AgentCmd;
+
+/// Identifier for routing PTY I/O back to the correct session.
+pub type SessionId = String;
 
 /// A running CLI agent driven through a pseudoterminal.
 ///
@@ -24,7 +27,7 @@ impl PtySession {
     /// Spawn `cmd` in a PTY sized to `rows` x `cols`. A background thread pumps
     /// child output into `tx` as `AppEvent::PtyOutput` messages.
     pub fn spawn(
-        kind: AgentKind,
+        session_id: SessionId,
         cmd: &AgentCmd,
         rows: u16,
         cols: u16,
@@ -65,6 +68,7 @@ impl PtySession {
 
         // Blocking reader thread -> async channel.
         let out_tx = tx.clone();
+        let reader_sid = session_id.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             loop {
@@ -72,7 +76,7 @@ impl PtySession {
                     Ok(0) => break,
                     Ok(n) => {
                         if out_tx
-                            .send(AppEvent::PtyOutput(kind, buf[..n].to_vec()))
+                            .send(AppEvent::PtyOutput(reader_sid.clone(), buf[..n].to_vec()))
                             .is_err()
                         {
                             break;
@@ -86,7 +90,7 @@ impl PtySession {
         // Wait for exit on another thread so the loop is notified.
         std::thread::spawn(move || {
             let _ = child.wait();
-            let _ = tx.send(AppEvent::PtyExited(kind));
+            let _ = tx.send(AppEvent::PtyExited(session_id));
         });
 
         Ok(Self {
