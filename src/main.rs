@@ -19,6 +19,7 @@ use crossterm::execute;
 use futures_util::StreamExt;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use crate::app::{App, AppEvent};
@@ -53,6 +54,10 @@ async fn run(terminal: &mut Term, mut app: App, mut rx: UnboundedReceiver<AppEve
             if k.kind == KeyEventKind::Release {
                 continue;
             }
+        }
+
+        if let AppEvent::Input(Event::Resize(cols, rows)) = &event {
+            terminal.resize(Rect::new(0, 0, *cols, *rows))?;
         }
 
         app.handle_event(event);
