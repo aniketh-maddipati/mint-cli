@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use anyhow::{Context, Result};
-use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
+use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::app::{AgentKind, AppEvent};
@@ -15,6 +15,7 @@ pub struct PtySession {
     pub parser: vt100::Parser,
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
+    killer: Box<dyn ChildKiller + Send + Sync>,
     rows: u16,
     cols: u16,
 }
@@ -60,6 +61,7 @@ impl PtySession {
 
         let mut reader = pair.master.try_clone_reader().context("clone pty reader")?;
         let writer = pair.master.take_writer().context("take pty writer")?;
+        let killer = child.clone_killer();
 
         // Blocking reader thread -> async channel.
         let out_tx = tx.clone();
@@ -91,6 +93,7 @@ impl PtySession {
             parser: vt100::Parser::new(rows, cols, 2000),
             master: pair.master,
             writer,
+            killer,
             rows,
             cols,
         })
@@ -105,6 +108,11 @@ impl PtySession {
     /// Feed child output bytes into the terminal parser.
     pub fn feed(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
+    }
+
+    /// Signal the child process to terminate.
+    pub fn kill(&mut self) {
+        let _ = self.killer.kill();
     }
 
     /// Resize both the parser and the underlying PTY to match the render area.
@@ -123,5 +131,11 @@ impl PtySession {
             pixel_width: 0,
             pixel_height: 0,
         });
+    }
+}
+
+impl Drop for PtySession {
+    fn drop(&mut self) {
+        self.kill();
     }
 }

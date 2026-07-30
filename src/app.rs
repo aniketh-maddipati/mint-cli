@@ -170,8 +170,10 @@ impl App {
     /// Record the output pane size so spawns and resizes match the render area.
     pub fn set_output_size(&mut self, rows: u16, cols: u16) {
         self.output_size = (rows.max(1), cols.max(1));
-        if let Some(s) = self.pty_mut(self.active) {
-            s.resize(rows, cols);
+        for kind in [AgentKind::Claude, AgentKind::Codex] {
+            if let Some(s) = self.pty_mut(kind) {
+                s.resize(rows, cols);
+            }
         }
     }
 
@@ -184,6 +186,7 @@ impl App {
                 }
             }
             AppEvent::PtyExited(kind) => {
+                self.clear_pty(kind);
                 self.status = format!("{} exited", kind.title());
             }
             AppEvent::LmChunk(text) => self.lm_output.push_str(&text),
@@ -203,6 +206,7 @@ impl App {
         match event {
             Event::Key(key) => self.handle_key(key),
             Event::Mouse(m) => self.handle_mouse(m),
+            Event::Resize(_, _) => {}
             _ => {}
         }
     }
@@ -381,6 +385,8 @@ impl App {
     }
 
     fn start_pty(&mut self, kind: AgentKind) {
+        self.clear_pty(kind);
+
         let (rows, cols) = self.output_size;
         let cmd = match kind {
             AgentKind::Claude => self.config.claude.clone(),
@@ -394,6 +400,7 @@ impl App {
                     AgentKind::Codex => self.codex = Some(session),
                     AgentKind::LmStudio => {}
                 }
+                self.focus = Focus::Output;
                 self.status = format!("Started {} ({})", kind.title(), cmd.command);
             }
             Err(err) => self.status = format!("Failed to start {}: {err}", kind.title()),
@@ -423,12 +430,7 @@ impl App {
 
     fn stop_active(&mut self) {
         match self.active {
-            AgentKind::Claude => {
-                self.claude = None;
-            }
-            AgentKind::Codex => {
-                self.codex = None;
-            }
+            AgentKind::Claude | AgentKind::Codex => self.clear_pty(self.active),
             AgentKind::LmStudio => {
                 if let Some(task) = self.lm_task.take() {
                     task.abort();
@@ -437,6 +439,18 @@ impl App {
             }
         }
         self.status = format!("Stopped {}", self.active.title());
+    }
+
+    fn clear_pty(&mut self, kind: AgentKind) {
+        match kind {
+            AgentKind::Claude => {
+                self.claude = None;
+            }
+            AgentKind::Codex => {
+                self.codex = None;
+            }
+            AgentKind::LmStudio => {}
+        }
     }
 
     fn save_config(&mut self) {
